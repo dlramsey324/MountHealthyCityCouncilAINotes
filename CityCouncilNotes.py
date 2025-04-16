@@ -34,6 +34,8 @@ def transcribe_audio(audio_path):
     with open(audio_path, "rb") as audio_file:
         transcription = client.audio.transcriptions.create(
             model='whisper-1',
+            language='en',   # specify english (prevents issue with some welsh embedded in
+                             #    "waiting for meeting to start" programming
             file=audio_file
         )
     return transcription
@@ -44,6 +46,21 @@ def compress_audio(input_path, output_path, bitrate="64k"):
     command = ["ffmpeg", "-i", input_path, "-b:a", bitrate, output_path, "-y"]
     subprocess.run(command, check=True)
     print(f"Compressed audio saved as {output_path}")
+
+
+def split_audio(input_path, segment_duration=1800, output_prefix="segment_"):
+    """
+    Splits the input audio file into segments of given duration (in seconds).
+    Each segment is saved with the given prefix and an incremental index.
+    """
+    import subprocess
+    command = [
+        "ffmpeg", "-i", input_path,
+        "-f", "segment", "-segment_time", str(segment_duration),
+        "-c", "copy", output_prefix + "%03d.mp3", "-y"
+    ]
+    subprocess.run(command, check=True)
+    print(f"Audio split into segments with prefix {output_prefix}")
 
 
 def generate_summary(transcribed_text):
@@ -85,7 +102,7 @@ def generate_summary(transcribed_text):
 
 def main():
     # Set your YouTube video URL (change as needed)
-    youtube_url = "https://www.youtube.com/watch?v=vuY_xSnGejE&list=PLEuWRfzQpk8WtZbkDKTKB2sC8XC-UTjox&index=1"
+    youtube_url = "https://www.youtube.com/watch?v=Dgsxh3dO9lE&list=PLEuWRfzQpk8WtZbkDKTKB2sC8XC-UTjox&index=1"
     audio_base = "audio"   # Base name without extension
     audio_file = audio_base + ".mp3"   # Final audio file name after postprocessing
 
@@ -93,26 +110,27 @@ def main():
     print("Downloading audio from YouTube...")
     download_audio_from_youtube(youtube_url, audio_base)
 
-    # Step 2: Check audio file size and compress if necessary
-    max_size = 26214400  # 25 MB in bytes
-    if os.path.getsize(audio_file) > max_size:
-        print("Audio file is too large, compressing audio...")
-        compressed_audio_file = "audio_compressed.mp3"
-        compress_audio(audio_file, compressed_audio_file, bitrate="64k")
-        audio_to_transcribe = compressed_audio_file
-    else:
-        audio_to_transcribe = audio_file
+    # Step 2: Split the audio into 30 minute segments
+    print("Splitting audio into 30 minute segments...")
+    split_audio(audio_file, segment_duration=1800, output_prefix="segment_")
 
-    # Transcribe audio using OpenAI's transcription API
-    print("Transcribing audio...")
-    transcription = transcribe_audio(audio_to_transcribe)
-    transcribed_text = transcription.text
-    print("Transcription complete:")
-    print(transcribed_text)
+    # Step 3: Transcribe each audio segment and combine the transcripts
+    import glob
+    segment_files = sorted(glob.glob("segment_*.mp3"))
+    full_transcript = ""
+    for segment in segment_files:
+        print(f"Compressing {segment} to reduce file size...")
+        compressed_segment = "compressed_" + segment
+        compress_audio(segment, compressed_segment, bitrate="64k")
+        print(f"Transcribing {compressed_segment}...")
+        transcription = transcribe_audio(compressed_segment)
+        full_transcript += transcription.text + "\n"
+    print("Full transcript generated:")
+    print(full_transcript)
 
-    # Step 3: Generate a summary of the meeting notes using OpenAI Chat Completions API
+    # Step 4: Generate a summary from the full transcript
     print("Generating summary using OpenAI Chat Completions API...")
-    generated_summary = generate_summary(transcribed_text)
+    generated_summary = generate_summary(full_transcript)
     print("Generated summary from the model:")
     print(generated_summary)
 
